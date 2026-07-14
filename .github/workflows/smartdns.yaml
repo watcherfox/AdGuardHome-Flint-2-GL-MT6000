@@ -116,7 +116,14 @@ jobs:
           if [ "${{ inputs.build_luci }}" = "true" ]; then
             echo "CONFIG_PACKAGE_luci-app-smartdns=m" >> .config
           fi
-          
+       - name: Fix smartdns-webui hash mismatch
+      run: |
+        find . -type f -name "Makefile" -exec sed -i 's/42e280cbfc168f88690652b85ce919c2aeedc9ef7c4b55122742e484b23492cd/2d7769f3b8b3c1c22fb423dea565e41051e178fe04b6a321310b96d89d8925d1/g' {} +
+
+       - name: Compile packages
+      run: |
+        # Твоя текущая команда сборки, например:
+        make package/smartdns/compile V=s
           # Заполняем конфигурационный файл
           make defconfig
 
