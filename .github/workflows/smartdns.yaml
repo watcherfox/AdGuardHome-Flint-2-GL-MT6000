@@ -1,4 +1,4 @@
-name: Build SmartDNS (Flint2 OpenWrt 25.12)
+name: Build SmartDNS 48.2 (Flint2 OpenWrt 25.12)
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ jobs:
       OPENWRT_VERSION: 25.12.5
       TARGET: mediatek
       SUBTARGET: filogic
+      SMARTDNS_VERSION: 48.2
 
     steps:
       - name: Install deps
@@ -20,7 +21,7 @@ jobs:
             gcc-multilib g++-multilib gettext git libncurses-dev \
             libssl-dev rsync unzip zlib1g-dev file wget zstd python3
 
-      - name: Download SDK (stable)
+      - name: Download SDK
         run: |
           URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}/"
           FILE=$(curl -s $URL | grep -oE 'openwrt-sdk-[^"]*\.tar\.zst' | head -n1)
@@ -38,10 +39,29 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Add official smartdns package
+      - name: Add smartdns package
         working-directory: ${{ env.SDK_DIR }}
         run: |
           git clone https://github.com/pymumu/openwrt-smartdns package/smartdns
+
+      # 🔴 КЛЮЧЕВОЙ ФИКС: версия 48.2
+      - name: Override SmartDNS version
+        working-directory: ${{ env.SDK_DIR }}/package/smartdns
+        run: |
+          mkdir -p patches
+
+          cat > patches/001-version.patch << EOF
+--- a/Makefile
++++ b/Makefile
+@@
+-PKG_VERSION:=46.1
++PKG_VERSION:=${SMARTDNS_VERSION}
+@@
+-PKG_SOURCE_VERSION:=v46.1
++PKG_SOURCE_VERSION:=v${SMARTDNS_VERSION}
+@@
++PKG_BUILD_FLAGS:=no-mips16
+EOF
 
       - name: Configure
         working-directory: ${{ env.SDK_DIR }}
@@ -49,10 +69,16 @@ jobs:
           echo "CONFIG_PACKAGE_smartdns=m" >> .config
           make defconfig
 
+      - name: Download sources
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          make package/smartdns/download V=s
+
       - name: Build
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          make package/smartdns/compile V=s -j$(nproc)
+          make package/smartdns/compile V=s -j$(nproc) || \
+          make package/smartdns/compile V=s -j1
 
       - name: Collect
         working-directory: ${{ env.SDK_DIR }}
@@ -63,5 +89,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: smartdns-flint2
+          name: smartdns-${{ env.SMARTDNS_VERSION }}-flint2
           path: /tmp/artifacts/*.apk
