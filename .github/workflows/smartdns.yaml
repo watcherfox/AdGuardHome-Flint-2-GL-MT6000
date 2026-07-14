@@ -76,28 +76,10 @@ jobs:
           SDK_DIR=$(echo "$SDK_FILE" | sed -E 's/\.tar\.(zst|xz)$//')
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Update and Install standard feeds
+      - name: Integrate SmartDNS directly to packages
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Force Custom SmartDNS Version (Kill OpenWrt 46.1)
-        working-directory: ${{ env.SDK_DIR }}
-        run: |
-          echo "--- Удаление старой версии 46.1 из фидов OpenWrt ---"
-          # Деинсталлируем пакеты из индекса
-          ./scripts/feeds uninstall smartdns || true
-          ./scripts/feeds uninstall luci-app-smartdns || true
-          
-          # Жестко удаляем директории со старым кодом
-          rm -rf feeds/packages/net/smartdns
-          rm -rf feeds/luci/applications/luci-app-smartdns
-          rm -rf package/feeds/packages/smartdns
-          rm -rf package/feeds/luci/luci-app-smartdns
-          
-          echo "--- Клонирование самой свежей версии от pymumu ---"
-          # Клонируем новые версии напрямую в папку package, теперь они единственные в системе
+          # Клонируем репозитории напрямую в локальные пакеты
           git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
             https://github.com/pymumu/openwrt-smartdns package/smartdns
           
@@ -109,15 +91,22 @@ jobs:
       - name: Configure .config
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          # Сбрасываем кэш SDK, чтобы он просканировал только что добавленную папку package/
+          rm -rf tmp
+          
+          # Записываем наши пакеты в конфиг
           echo "CONFIG_PACKAGE_smartdns=m" >> .config
           if [ "${{ inputs.build_luci }}" = "true" ]; then
             echo "CONFIG_PACKAGE_luci-app-smartdns=m" >> .config
           fi
+          
+          # Заполняем конфиг дефолтными значениями (SDK подхватит зависимости автоматически)
           make defconfig
 
       - name: Compile packages
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          # Собираем только наши пакеты, используя готовые зависимости из SDK
           make package/smartdns/compile V=s -j$(nproc)
           
           if [ "${{ inputs.build_luci }}" = "true" ]; then
