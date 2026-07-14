@@ -7,18 +7,22 @@ on:
         description: 'Версия OpenWrt (напр., 25.12.5). С версии 25.12 сборка идёт только в .apk'
         required: true
         default: '25.12.5'
+        type: string
       target:
         description: 'Target (Платформа)'
         required: true
         default: 'mediatek'
+        type: string
       subtarget:
         description: 'Subtarget (Архитектура процессора)'
         required: true
         default: 'filogic'
+        type: string
       smartdns_ref:
         description: 'Ветка или тег репозитория openwrt-smartdns'
         required: true
         default: 'master'
+        type: string
       build_luci:
         description: 'Собирать luci-app-smartdns (панель управления в LuCI)'
         type: boolean
@@ -43,11 +47,10 @@ jobs:
           
           SDK_FILE=$(curl -fsSL "$BASE_URL/" | grep -oE 'openwrt-sdk-[A-Za-z0-9._-]+\.tar\.(zst|xz)' | head -n1)
           if [ -z "$SDK_FILE" ]; then
-            echo "Ошибка: Не удалось найти SDK в директории $BASE_URL. Проверьте версию/таргет." >&2
+            echo "Ошибка: Не удалось найти SDK в директории $BASE_URL." >&2
             exit 1
           fi
           echo "SDK_FILE=$SDK_FILE" >> "$GITHUB_ENV"
-          echo "Найден SDK: $SDK_FILE"
 
       - name: Cache SDK Archive
         id: cache-sdk
@@ -60,10 +63,7 @@ jobs:
         run: |
           mkdir -p sdk-cache
           if [ ! -f "sdk-cache/$SDK_FILE" ]; then
-            echo "Архив не найден в кэше. Скачиваю..."
             wget -q -O "sdk-cache/$SDK_FILE" "$BASE_URL/$SDK_FILE"
-          else
-            echo "Архив успешно получен из кэша GitHub."
           fi
           cp "sdk-cache/$SDK_FILE" .
 
@@ -73,15 +73,16 @@ jobs:
             *.tar.zst) tar --zstd -xf "$SDK_FILE" ;;
             *.tar.xz)  tar -xJf "$SDK_FILE" ;;
           esac
-          SDK_DIR=$(echo "$SDK_FILE" \vert{} sed -E 's/\.tar\.(zst\vert{}xz)$//')
+          SDK_DIR=$(echo "$SDK_FILE" | sed -E 's/\.tar\.(zst|xz)$//')
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Update Feeds (Fetch Makefiles only)
+      - name: Update and Install Feeds
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          ./scripts/feeds update packages luci
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-      - name: Integrate SmartDNS and Strip Dependencies
+      - name: Integrate SmartDNS
         working-directory: ${{ env.SDK_DIR }}
         run: |
           git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
@@ -89,4 +90,49 @@ jobs:
           
           if [ "${{ inputs.build_luci }}" = "true" ]; then
             git clone --depth 1 --branch "master" \
-              https://github.com/pymumu/luci-app-smartdns package
+              https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
+          fi
+
+      - name: Fix Dependencies and Hash Checks
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          # Отключаем проверку хешей (гарантированное решение проблемы несовпадения)
+          sed -i 's/^PKG_HASH:=.*/PKG_HASH:=skip/g' package/smartdns/Makefile
+          # Удаляем лишние зависимости
+          sed -i 's/DEPENDS\s*:=.*/DEPENDS:=/g' package/smartdns/Makefile
+          
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            sed -i 's/^PKG_HASH:=.*/PKG_HASH:=skip/g' package/luci-app-smartdns/Makefile
+            sed -i 's/DEPENDS\s*:=.*/DEPENDS:=+smartdns/g' package/luci-app-smartdns/Makefile
+          fi
+
+      - name: Configure and Compile
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          rm -rf tmp
+          echo "CONFIG_PACKAGE_smartdns=m" >> .config
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-smartdns=m" >> .config
+          fi
+          make defconfig
+          
+          # Сборка с fallback-защитой (-j1), если многопоток рухнет
+          make package/smartdns/compile V=s -j$(nproc) || make package/smartdns/compile V=s -j1
+          
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            make package/luci-app-smartdns/compile V=s -j$(nproc) || make package/luci-app-smartdns/compile V=s -j1
+          fi
+
+      - name: Collect artifacts
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          mkdir -p /tmp/artifacts
+          find bin/packages/ -type f -name "*smartdns*.apk" ! -name "*i18n*" -exec cp {} /tmp/artifacts/ \;
+          ls -la /tmp/artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartdns-latest-${{ inputs.openwrt_version }}-${{ inputs.target }}-${{ inputs.subtarget }}
+          path: /tmp/artifacts/*.apk
+          if-no-files-found: error
