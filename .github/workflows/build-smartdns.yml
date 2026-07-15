@@ -1,4 +1,4 @@
-name: Build SmartDNS ipk
+name: Build SmartDNS apk
 
 on:
   workflow_dispatch:
@@ -27,6 +27,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Install host deps
         run: |
@@ -61,11 +62,11 @@ jobs:
       - name: Add smartdns feed and install
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          ulimit -n 65536 || true
           ./scripts/feeds update -a
           rm -rf feeds/packages/net/smartdns
           git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
             https://github.com/pymumu/openwrt-smartdns feeds/packages/net/smartdns
-          ./scripts/feeds install -a
           ./scripts/feeds install smartdns
           if [ "${{ inputs.build_ui }}" = "true" ]; then
             ./scripts/feeds install smartdns-ui
@@ -74,6 +75,7 @@ jobs:
       - name: Configure .config
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          ulimit -n 65536 || true
           echo "CONFIG_PACKAGE_smartdns=m" >> .config
           if [ "${{ inputs.build_ui }}" = "true" ]; then
             echo "CONFIG_PACKAGE_smartdns-ui=m" >> .config
@@ -83,7 +85,20 @@ jobs:
       - name: Build smartdns
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          ulimit -n 65536 || true
           make package/feeds/packages/smartdns/compile V=s -j"$(nproc)"
+
+      - name: Dump real error logs on failure
+        if: failure()
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          echo "=== .config относящиеся к smartdns ==="
+          grep -i smartdns .config || true
+          echo "=== Поиск логов сборки ==="
+          find logs -iname '*.txt' 2>/dev/null | while read -r f; do
+            echo "----- $f -----"
+            tail -n 200 "$f"
+          done
 
       - name: Collect apk artifacts
         working-directory: ${{ env.SDK_DIR }}
